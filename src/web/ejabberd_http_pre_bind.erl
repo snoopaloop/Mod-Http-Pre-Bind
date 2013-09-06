@@ -133,17 +133,20 @@ handle_bind(Sid, Rid, IP, Count) ->
 
 %% Entry point for data coming from client through ejabberd HTTP server:
 process_request(Data, IP) ->
-    {ok,{Rid,XmppDomain,Attrs}} = parse_request(Data),
+	?DEBUG("process_request: ~p", [Data]),
+    {ok,{Rid,XmppDomain,From,Password,Attrs}} = parse_request(Data),
+    ?DEBUG("Attrs", [Attrs]),
     Sid = sha:sha(term_to_binary({now(), make_ref()})),
     {ok, Pid} = ejabberd_http_bind:start(XmppDomain, Sid, "", IP),
     StartAttrs = [{"rid",Rid},
 		  {"to",XmppDomain},
+		  {"from", From},
 		  {"xmlns",?NS_HTTP_BIND},
 		  {"xml:lang","en"},
 		  {"xmpp:version","1.0"},
 		  {"ver","1.6"},
 		  {"xmlns:xmpp","urn:xmpp:bosh"},
-		  {"window","5"},
+		  %{"window","5"},
 		  {"content","text/xml"},
 		  {"charset","utf-8"}],
     StartAttrs0 = lists:append(StartAttrs,Attrs),
@@ -161,11 +164,13 @@ process_request(Data, IP) ->
     AuthAttrs = [{"rid",integer_to_list(Rid+1)},
 		 {"xmlns",?NS_HTTP_BIND},
 		 {"sid",Sid}],
-    AuthPayload = [{xmlelement,
-		   "auth",
-		   [{"xmlns","urn:ietf:params:xml:ns:xmpp-sasl"},
-		    {"mechanism","ANONYMOUS"}],
-		   []}],
+	%% TODO: if no JID, anonymous
+    % AuthPayload = [{xmlelement,
+		  %  "auth",
+		  %  [{"xmlns","urn:ietf:params:xml:ns:xmpp-sasl"},
+		  %   {"mechanism","ANONYMOUS"}],
+		  %  []}],
+	AuthPayload = build_auth_payload(From, Password),
     AuthPayloadSize = 191,
     RidA = handle_auth(Sid, 
 		       Rid+1, 
@@ -211,6 +216,28 @@ process_request(Data, IP) ->
                     IP),
     Retval.
 
+build_auth_payload(Jid, Password) ->
+  InitialResponse = iolist_to_binary([0, node_as_list(Jid), 0, Password]),
+  ?DEBUG("Authentication initial Response: ~p", [InitialResponse]),
+  [selected_mechanism("PLAIN", InitialResponse)].
+
+node_as_list(Jid) ->
+	case string:tokens(Jid, "@") of
+		[Node, _] ->
+			Node;
+		[N] ->
+			N
+	end.
+
+selected_mechanism(Mechanism, InitialResponse) ->
+  {xmlelement,
+    "auth",
+    [{"xmlns",
+      "urn:ietf:params:xml:ns:xmpp-sasl"},
+    {"mechanism",
+      Mechanism}],
+    [{xmlcdata, base64:encode_to_string(InitialResponse)}]}.
+
 code_change(_OldVsn, StateName, StateData, _Extra) ->
     {ok, StateName, StateData}.
 %% Parse the initial client request to start the pre bind session.
@@ -226,7 +253,9 @@ parse_request(Data) ->
 		    XmppDomain = xml:get_attr_s("to",Attrs),
 		    RetAttrs = [{"wait",xml:get_attr_s("wait",Attrs)},
 				{"hold",xml:get_attr_s("hold",Attrs)}],
-		    {ok, {Rid, XmppDomain,RetAttrs}}
+		    {ok, {Rid, XmppDomain,
+		    	xml:get_attr_s("from",Attrs), xml:get_attr_s("password",Attrs), 
+		    	RetAttrs}}
 	    end;
 	{xmlelement, _Name, _Attrs, _Els} ->
 	    ?ERROR_MSG("Not a body ~p",[_Name]),
